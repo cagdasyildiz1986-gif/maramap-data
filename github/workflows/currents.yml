@@ -1,1 +1,37 @@
+name: Marmara akinti verisi
+
+on:
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Toolbox kur
+        run: pip install copernicusmarine xarray netcdf4
+
+      - name: Veriyi cek
+        env:
+          COPERNICUSMARINE_SERVICE_USERNAME: ${{ secrets.CMEMS_USER }}
+          COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.CMEMS_PASS }}
+        run: python tools/fetch_currents.py
+
+      - name: Commit & push
+        run: |
+          git config user.name "maramap-bot"
+          git config user.email "bot@maramap"
+          git add currents.json
+          git diff --cached --quiet || git commit -m "Akinti guncellendi"
+          git push
 
