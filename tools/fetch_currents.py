@@ -26,7 +26,7 @@ def main():
         dataset_id=DATASET,
         variables=["uo", "vo"],
         start_datetime=start, end_datetime=start,
-        minimum_depth=0, maximum_depth=1,
+        minimum_depth=1.0, maximum_depth=1.5,
         output_filename=NC, overwrite=True,
         **BBOX,
     )
