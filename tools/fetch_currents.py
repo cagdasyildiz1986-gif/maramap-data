@@ -12,7 +12,7 @@ import json, os, sys, datetime
 import copernicusmarine
 import xarray as xr
 
-DATASET = "cmems_mod_med_phy-cur_anfc_4.2km_P1D-m"
+DATASET = "cmems_mod_glo_phy-cur_anfc_0.083deg_P1D-m"
 BBOX = dict(minimum_longitude=26.0, maximum_longitude=30.0,
             minimum_latitude=40.0, maximum_latitude=41.3)
 OUT = os.path.join(os.path.dirname(__file__), "..", "currents.json")
