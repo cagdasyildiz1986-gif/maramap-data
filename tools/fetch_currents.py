@@ -26,7 +26,7 @@ def main():
         dataset_id=DATASET,
         variables=["uo", "vo"],
         start_datetime=start, end_datetime=start,
-        minimum_depth=1.0, maximum_depth=1.5,
+        minimum_depth=0, maximum_depth=1,
         output_filename=NC, overwrite=True,
         **BBOX,
     )
@@ -39,8 +39,8 @@ def main():
     lats = ds["latitude"].values
     lngs = ds["longitude"].values
     # 4.2 km ızgarayı ~0.1 dereceye seyrelt (her 3. nokta)
-    for i in range(0, len(lats), 3):
-        for j in range(0, len(lngs), 3):
+    for i in range(0, len(lats), 1):
+        for j in range(0, len(lngs), 1):
             u = float(uo.values[i, j]); v = float(vo.values[i, j])
             if u != u or v != v:          # NaN = kara
                 continue
