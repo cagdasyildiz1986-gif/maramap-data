@@ -29,9 +29,9 @@ jobs:
 
       - name: Commit & push
         run: |
-          git config user.name "maramap-bot"
-          git config user.email "bot@maramap"
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git pull --rebase origin main
           git add currents.json
-          git diff --cached --quiet || git commit -m "Akinti guncellendi"
-          git push
-
+          git diff --cached --quiet || git commit -m "currents update $(date -u +%Y-%m-%dT%H:%M)"
+          git push origin main
