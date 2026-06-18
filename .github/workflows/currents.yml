@@ -27,11 +27,11 @@ jobs:
           COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.CMEMS_PASS }}
         run: python tools/fetch_currents.py
 
+    
       - name: Commit & push
         run: |
           git config user.email "action@github.com"
           git config user.name "GitHub Action"
-          git pull --rebase origin main
           git add currents.json
           git diff --cached --quiet || git commit -m "currents update $(date -u +%Y-%m-%dT%H:%M)"
-          git push origin main
+          git push origin main --force
