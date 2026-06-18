@@ -31,6 +31,7 @@ jobs:
         run: |
           git config user.email "action@github.com"
           git config user.name "GitHub Action"
+          git reset --hard HEAD
           git add currents.json
           git diff --cached --quiet || git commit -m "currents update $(date -u +%Y-%m-%dT%H:%M)"
           git push origin main --force
