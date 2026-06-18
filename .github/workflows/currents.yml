@@ -26,7 +26,6 @@ jobs:
           COPERNICUSMARINE_SERVICE_USERNAME: ${{ secrets.CMEMS_USER }}
           COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.CMEMS_PASS }}
         run: python tools/fetch_currents.py
-
     
       - name: Commit & push
         run: |
