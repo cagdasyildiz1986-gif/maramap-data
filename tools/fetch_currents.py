@@ -1,12 +1,16 @@
 """
-fetch_currents.py — MaraMap v4.0
-Copernicus Mediterranean Model: akıntı + çok-derinlik sıcaklık + karışık tabaka derinliği
-Dataset: cmems_mod_med_phy-cur_anfc_4.2km_P1D-m  (4.2km, Akdeniz/Ege/Marmara)
+fetch_currents.py — MaraMap v4.1 (vectorized)
+Copernicus Mediterranean Model: yüzey akıntısı + karışık tabaka derinliği (MLD)
+Dataset: cmems_mod_med_phy-cur_anfc_4.2km_P1D-m  (4.2km — Akdeniz/Ege/Marmara)
 Çıktı: currents.json → GitHub maramap-data repo'ya push edilir
+
+HIZ: nokta nokta okuma yerine numpy ile toplu (vectorized) okuma.
+     Binlerce hücre saniyeler içinde işlenir.
 """
 import copernicusmarine
 import json, os, sys
-from datetime import datetime, timedelta, timezone
+import numpy as np
+from datetime import datetime, timezone
 
 OUT = os.path.join(os.path.dirname(__file__), '..', 'currents.json')
 
@@ -19,85 +23,108 @@ BBOX = dict(
 )
 
 today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-print(f"[{datetime.now(timezone.utc).isoformat()}] Veri çekiliyor — {today}")
+print(f"[{datetime.now(timezone.utc).isoformat()}] Veri cekiliyor — {today}")
 
 result = {'updated': datetime.now(timezone.utc).isoformat(), 'currents': [], 'mld': []}
 errors = []
 
-# ── 1. AKINTILAR (günlük, yüzey) ─────────────────────────────
+# Veri inceltme: her N. hücre (4.2km ince; 2 = ~8.4km, harita için yeterli)
+STRIDE = 2
+
+# ── 1. AKINTILAR (yüzey ~1m) ─────────────────────────────────
 try:
-    import numpy as np
-    ds_cur = copernicusmarine.open_dataset(
+    ds = copernicusmarine.open_dataset(
         dataset_id="cmems_mod_med_phy-cur_anfc_4.2km_P1D-m",
-        variables=["uo","vo"],
+        variables=["uo", "vo"],
         start_datetime=today,
         end_datetime=today,
         minimum_depth=1.0,
-        maximum_depth=2.0,
+        maximum_depth=1.5,
         **BBOX
     )
-    # İlk zaman adımını al
-    t0  = ds_cur.isel(time=0)
-    lats = t0.latitude.values
-    lons = t0.longitude.values
+
+    da_uo = ds["uo"].isel(time=0)
+    da_vo = ds["vo"].isel(time=0)
+    if "depth" in da_uo.dims:
+        da_uo = da_uo.isel(depth=0)
+        da_vo = da_vo.isel(depth=0)
+
+    lats = ds["latitude"].values[::STRIDE]
+    lons = ds["longitude"].values[::STRIDE]
+
+    # Tüm grid tek seferde numpy'a (vectorized)
+    uo = da_uo.values[::STRIDE, ::STRIDE]
+    vo = da_vo.values[::STRIDE, ::STRIDE]
+
+    spd = np.sqrt(uo**2 + vo**2)
+    dir_deg = (np.degrees(np.arctan2(uo, vo)) + 360) % 360
 
     rows = []
-    for ilat, lat in enumerate(lats):
-        for ilon, lon in enumerate(lons):
-            try:
-                uo = float(t0['uo'].isel(latitude=ilat, longitude=ilon).values.flat[0])
-                vo = float(t0['vo'].isel(latitude=ilat, longitude=ilon).values.flat[0])
-                if np.isnan(uo) or np.isnan(vo): continue
-                spd = float(np.sqrt(uo**2 + vo**2))
-                if spd < 0.02: continue  # çok yavaş akıntıları atla
-                import math
-                dir_deg = float(math.degrees(math.atan2(uo, vo))) % 360
-                rows.append({'lat':round(float(lat),3), 'lng':round(float(lon),3),
-                             'uo':round(uo,3), 'vo':round(vo,3),
-                             'speed':round(spd,3), 'dir_deg':round(dir_deg,1)})
-            except: continue
+    for i in range(len(lats)):
+        for j in range(len(lons)):
+            u, v, s = uo[i, j], vo[i, j], spd[i, j]
+            if np.isnan(u) or np.isnan(v) or s < 0.02:
+                continue
+            rows.append({
+                'lat': round(float(lats[i]), 3),
+                'lng': round(float(lons[j]), 3),
+                'uo': round(float(u), 3),
+                'vo': round(float(v), 3),
+                'speed': round(float(s), 3),
+                'dir_deg': round(float(dir_deg[i, j]), 1),
+            })
 
     result['currents'] = rows
-    print(f"  Akıntı: {len(rows)} nokta")
-    ds_cur.close()
+    print(f"  Akinti: {len(rows)} nokta")
+    ds.close()
 except Exception as e:
     errors.append(f"Currents: {e}")
-    print(f"  [HATA] Akıntı: {e}", file=sys.stderr)
+    print(f"  [HATA] Akinti: {e}", file=sys.stderr)
 
-# ── 2. KARISIK TABAKA DERİNLİĞİ (Mixed Layer Depth) ─────────
+# ── 2. KARISIK TABAKA DERINLIGI (MLD) ────────────────────────
 try:
-    ds_mld = copernicusmarine.open_dataset(
+    dsm = copernicusmarine.open_dataset(
         dataset_id="cmems_mod_med_phy-mld_anfc_4.2km_P1D-m",
         variables=["mlotst"],
         start_datetime=today,
         end_datetime=today,
         **BBOX
     )
-    t0m = ds_mld.isel(time=0)
+
+    da_m = dsm["mlotst"].isel(time=0)
+    if "depth" in da_m.dims:
+        da_m = da_m.isel(depth=0)
+
+    mlats = dsm["latitude"].values[::STRIDE]
+    mlons = dsm["longitude"].values[::STRIDE]
+    mld = da_m.values[::STRIDE, ::STRIDE]
+
     mld_rows = []
-    lats_m = t0m.latitude.values
-    lons_m = t0m.longitude.values
-    for ilat, lat in enumerate(lats_m[::2]):  # her 2. satır (hız için)
-        for ilon, lon in enumerate(lons_m[::2]):
-            try:
-                import numpy as np
-                v = float(t0m['mlotst'].isel(latitude=ilat*2, longitude=ilon*2).values.flat[0])
-                if np.isnan(v) or v <= 0: continue
-                mld_rows.append({'lat':round(float(lat),3), 'lng':round(float(lon),3), 'depth':round(v,1)})
-            except: continue
+    for i in range(len(mlats)):
+        for j in range(len(mlons)):
+            v = mld[i, j]
+            if np.isnan(v) or v <= 0:
+                continue
+            mld_rows.append({
+                'lat': round(float(mlats[i]), 3),
+                'lng': round(float(mlons[j]), 3),
+                'depth': round(float(v), 1),
+            })
+
     result['mld'] = mld_rows
     print(f"  MLD: {len(mld_rows)} nokta")
-    ds_mld.close()
+    dsm.close()
 except Exception as e:
     errors.append(f"MLD: {e}")
     print(f"  [HATA] MLD: {e}", file=sys.stderr)
 
-# ── Kaydet ──────────────────────────────────────────────────────
+# ── Kaydet ───────────────────────────────────────────────────
 if errors:
     result['errors'] = errors
 
 with open(OUT, 'w') as f:
-    json.dump(result, f, ensure_ascii=False, separators=(',',':'))
+    json.dump(result, f, ensure_ascii=False, separators=(',', ':'))
 
 kb = os.path.getsize(OUT) // 1024
-print(f"Kaydedildi: {OUT} ({kb} KB) — {len(result['currents'])} akıntı, {len(result['mld'])} MLD noktası")
+print(f"Kaydedildi: {OUT} ({kb} KB) — "
+      f"{len(result['currents'])} akinti, {len(result['mld'])} MLD noktasi")
