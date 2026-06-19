@@ -15,7 +15,7 @@ BBOX = dict(
     minimum_latitude  = 35.0,
     maximum_latitude  = 42.0,
     minimum_longitude = 25.0,
-    maximum_longitude = 37.0,
+    maximum_longitude = 36.25,
 )
 
 today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
@@ -32,8 +32,8 @@ try:
         variables=["uo","vo"],
         start_datetime=today,
         end_datetime=today,
-        minimum_depth=0,
-        maximum_depth=1,
+        minimum_depth=1.0,
+        maximum_depth=2.0,
         **BBOX
     )
     # İlk zaman adımını al
