@@ -20,9 +20,9 @@ end   = now.strftime('%Y-%m-%dT06:00:00')
 # Akdeniz + Ege kutusu (Marmara HARİÇ — onu blk modeli kapsar)
 MED_BBOX = dict(minimum_latitude=35.5, maximum_latitude=40.5,
                 minimum_longitude=25.5, maximum_longitude=36.0)
-# Marmara + Karadeniz batı kutusu
-BLK_BBOX = dict(minimum_latitude=40.0, maximum_latitude=42.2,
-                minimum_longitude=26.0, maximum_longitude=36.0)
+# Marmara kutusu — mrm-500m dataset sınırları: lat 39.5-41.5, lng 25-30
+BLK_BBOX = dict(minimum_latitude=40.0, maximum_latitude=41.4,
+                minimum_longitude=26.5, maximum_longitude=29.9)
 
 print(f"[{now.isoformat()}] Basliyor — {today[:10]}")
 try: print(f"Versiyon: {copernicusmarine.__version__}")
@@ -118,10 +118,25 @@ try:
 except Exception as e:
     errors.append(f"MRM-sal: {e}"); print(f"  [HATA] {e}", file=sys.stderr)
 try:
-    ds = fetch('cmems_mod_blk_phy-tem_anfc_mrm-500m_P1D-m', ['bottomT'], 'mrm_bt.nc', BLK_BBOX)
-    print(f"  Marmara dipT: {add_scalar(ds,'bottomT',MRM_STRIDE,'bt',-2,40,result['bottom_t'])} nokta"); ds.close()
+    # Marmara mrm modeli bottomT yerine thetao (sıcaklık) kullanır — en derin katmanı dip kabul et
+    ds = fetch('cmems_mod_blk_phy-tem_anfc_mrm-500m_P1D-m', ['thetao'], 'mrm_bt.nc', BLK_BBOX)
+    da = ds['thetao'].isel(time=0)
+    if 'depth' in da.dims:
+        da = da.isel(depth=-1)  # en derin katman = dip sıcaklığı
+    blats = ds['latitude'].values[::MRM_STRIDE]
+    blons = ds['longitude'].values[::MRM_STRIDE]
+    B = da.values[::MRM_STRIDE, ::MRM_STRIDE]
+    n = 0
+    for i in range(len(blats)):
+        for j in range(len(blons)):
+            v = B[i,j]
+            if np.isnan(v) or v < -2 or v > 40: continue
+            result['bottom_t'].append({'lat':round(float(blats[i]),3),
+                                       'lng':round(float(blons[j]),3),
+                                       'bt':round(float(v),2)})
+            n += 1
+    print(f"  Marmara dipT: {n} nokta"); ds.close()
 except Exception as e:
-    # bottomT yoksa thetao yüzey sıcaklığını dene
     errors.append(f"MRM-bt: {e}"); print(f"  [HATA] {e}", file=sys.stderr)
 
 # ═══ Kaydet ═══════════════════════════════════════════════
