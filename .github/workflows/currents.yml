@@ -8,10 +8,6 @@ on:
 permissions:
   contents: write
 
-env:
-  COPERNICUSMARINE_SERVICE_USERNAME: ${{ secrets.CMEMS_USER }}
-  COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.CMEMS_PASS }}
-
 jobs:
   fetch:
     runs-on: ubuntu-latest
@@ -24,6 +20,13 @@ jobs:
 
       - name: Toolbox kur
         run: pip install copernicusmarine xarray netcdf4 scipy
+
+      - name: Copernicus login
+        run: |
+          copernicusmarine login \
+            --username "${{ secrets.CMEMS_USER }}" \
+            --password "${{ secrets.CMEMS_PASS }}" \
+            --force-overwrite
 
       - name: Veriyi cek
         run: python tools/fetch_currents.py
