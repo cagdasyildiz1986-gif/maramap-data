@@ -32,7 +32,7 @@ jobs:
           u = os.environ['COPERNICUSMARINE_SERVICE_USERNAME']
           p = os.environ['COPERNICUSMARINE_SERVICE_PASSWORD']
           print(f'Kullanici: {u[:3]}***')
-          copernicusmarine.login(username=u, password=p, overwrite_configuration_if_exists=True)
+          copernicusmarine.login(username=u, password=p)
           print('Login basarili')
           "
 
