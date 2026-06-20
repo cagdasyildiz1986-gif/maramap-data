@@ -22,11 +22,11 @@ jobs:
         run: pip install copernicusmarine xarray netcdf4 scipy
 
       - name: Copernicus login
+        env:
+          CM_USER: ${{ secrets.CMEMS_USER }}
+          CM_PASS: ${{ secrets.CMEMS_PASS }}
         run: |
-          copernicusmarine login \
-            --username "${{ secrets.CMEMS_USER }}" \
-            --password "${{ secrets.CMEMS_PASS }}" \
-            --force-overwrite
+          copernicusmarine login --username "$CM_USER" --password "$CM_PASS" --force-overwrite
 
       - name: Veriyi cek
         run: python tools/fetch_currents.py
