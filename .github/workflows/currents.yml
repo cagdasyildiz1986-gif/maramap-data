@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+env:
+  COPERNICUSMARINE_SERVICE_USERNAME: ${{ secrets.CMEMS_USER }}
+  COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.CMEMS_PASS }}
+
 jobs:
   fetch:
     runs-on: ubuntu-latest
@@ -19,27 +23,9 @@ jobs:
           python-version: '3.11'
 
       - name: Toolbox kur
-        run: |
-          pip install "copernicusmarine==1.3.5" xarray netcdf4 scipy
-
-      - name: Copernicus kimlik dogrulama
-        env:
-          COPERNICUSMARINE_SERVICE_USERNAME: ${{ secrets.CMEMS_USER }}
-          COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.CMEMS_PASS }}
-        run: |
-          python -c "
-          import copernicusmarine, os
-          u = os.environ['COPERNICUSMARINE_SERVICE_USERNAME']
-          p = os.environ['COPERNICUSMARINE_SERVICE_PASSWORD']
-          print(f'Kullanici: {u[:3]}***')
-          copernicusmarine.login(username=u, password=p)
-          print('Login basarili')
-          "
+        run: pip install "copernicusmarine==1.3.5" xarray netcdf4 scipy
 
       - name: Veriyi cek
-        env:
-          COPERNICUSMARINE_SERVICE_USERNAME: ${{ secrets.CMEMS_USER }}
-          COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.CMEMS_PASS }}
         run: python tools/fetch_currents.py
 
       - name: Commit & push
