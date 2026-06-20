@@ -118,22 +118,28 @@ try:
 except Exception as e:
     errors.append(f"MRM-sal: {e}"); print(f"  [HATA] {e}", file=sys.stderr)
 try:
-    # Marmara mrm modeli bottomT yerine thetao (sıcaklık) kullanır — en derin katmanı dip kabul et
+    # Marmara mrm modeli: thetao (sıcaklık), her hücrede en derin GEÇERLİ değeri dip kabul et
     ds = fetch('cmems_mod_blk_phy-tem_anfc_mrm-500m_P1D-m', ['thetao'], 'mrm_bt.nc', BLK_BBOX)
-    da = ds['thetao'].isel(time=0)
-    if 'depth' in da.dims:
-        da = da.isel(depth=-1)  # en derin katman = dip sıcaklığı
+    da = ds['thetao'].isel(time=0)  # boyutlar: (depth, lat, lng)
     blats = ds['latitude'].values[::MRM_STRIDE]
     blons = ds['longitude'].values[::MRM_STRIDE]
-    B = da.values[::MRM_STRIDE, ::MRM_STRIDE]
+    arr = da.values  # (depth, lat, lng)
+    has_depth = ('depth' in da.dims) and arr.ndim == 3
     n = 0
-    for i in range(len(blats)):
-        for j in range(len(blons)):
-            v = B[i,j]
-            if np.isnan(v) or v < -2 or v > 40: continue
-            result['bottom_t'].append({'lat':round(float(blats[i]),3),
-                                       'lng':round(float(blons[j]),3),
-                                       'bt':round(float(v),2)})
+    for ii, i in enumerate(range(0, len(ds['latitude'].values), MRM_STRIDE)):
+        for jj, j in enumerate(range(0, len(ds['longitude'].values), MRM_STRIDE)):
+            if has_depth:
+                col = arr[:, i, j]  # bu hücrenin tüm derinlikleri
+                valid = col[~np.isnan(col)]
+                if valid.size == 0: continue
+                v = float(valid[-1])  # en derin geçerli değer (dip)
+            else:
+                v = float(arr[i, j])
+                if np.isnan(v): continue
+            if v < -2 or v > 40: continue
+            result['bottom_t'].append({'lat':round(float(ds['latitude'].values[i]),3),
+                                       'lng':round(float(ds['longitude'].values[j]),3),
+                                       'bt':round(v,2)})
             n += 1
     print(f"  Marmara dipT: {n} nokta"); ds.close()
 except Exception as e:
