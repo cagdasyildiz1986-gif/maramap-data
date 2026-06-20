@@ -23,7 +23,7 @@ jobs:
           python-version: '3.11'
 
       - name: Toolbox kur
-        run: pip install "copernicusmarine==1.3.5" xarray netcdf4 scipy
+        run: pip install copernicusmarine xarray netcdf4 scipy
 
       - name: Veriyi cek
         run: python tools/fetch_currents.py
