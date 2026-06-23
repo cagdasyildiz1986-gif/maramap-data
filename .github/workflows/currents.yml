@@ -1,8 +1,9 @@
-name: Marmara akinti verisi
+name: MaraMap deniz verisi
 
 on:
   schedule:
-    - cron: '30 3 * * *'
+    - cron: '30 3 * * *'    # her gün 03:30 UTC (06:30 TR)
+    - cron: '30 12 * * *'   # her gün 12:30 UTC (15:30 TR) — gün içi tazeleme
   workflow_dispatch:
 
 permissions:
@@ -19,7 +20,7 @@ jobs:
           python-version: '3.11'
 
       - name: Toolbox kur
-        run: pip install copernicusmarine xarray netcdf4 scipy
+        run: pip install copernicusmarine xarray netcdf4 numpy
 
       - name: Copernicus login
         env:
@@ -28,13 +29,18 @@ jobs:
         run: |
           copernicusmarine login --username "$CM_USER" --password "$CM_PASS" --force-overwrite
 
-      - name: Veriyi cek
+      - name: Akinti + MLD cek (currents.json)
+        continue-on-error: true
         run: python tools/fetch_currents.py
+
+      - name: SST + Klorofil + Dalga + Ruzgar cek (ocean.json)
+        continue-on-error: true
+        run: python tools/fetch_ocean.py
 
       - name: Commit & push
         run: |
           git config user.name "mavimera-bot"
           git config user.email "bot@mavimera.com"
-          git add currents.json
-          git diff --cached --quiet || git commit -m "Akinti guncellendi $(date -u +%F)"
+          git add currents.json ocean.json
+          git diff --cached --quiet || git commit -m "Deniz verisi guncellendi $(date -u +%F_%H:%M)"
           git push
