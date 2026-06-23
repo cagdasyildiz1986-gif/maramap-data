@@ -26,11 +26,12 @@ from datetime import datetime, timezone
 OUT = os.path.join(os.path.dirname(__file__), '..', 'ocean.json')
 
 # Türkiye kıyı bölgesi (Akdeniz modeli kapsamı)
+# Not: Akdeniz modeli ~36.29°E'de biter; 36.25 ile kırpma uyarısı önlenir.
 BBOX = dict(
     minimum_latitude  = 35.0,
     maximum_latitude  = 42.0,
     minimum_longitude = 25.0,
-    maximum_longitude = 37.0,
+    maximum_longitude = 36.25,
 )
 
 # Dataset ID'leri — gerekirse Copernicus kataloğundan doğrulayın
@@ -136,14 +137,19 @@ except Exception as e:
     print(f"  [HATA] Dalga: {e}", file=sys.stderr)
 
 # ── 4. RÜZGAR (10m, u/v → hız km/h) ──────────────────────────
+# Rüzgar veri seti SAATLİK ve ~1 gün gecikmeli olabilir. "today" istenince
+# "time dimension exceed" hatası verir (set dün 23:00'de biter). Çözüm:
+# son birkaç günü iste, mevcut SON zaman dilimini (isel time=-1) al.
 try:
+    from datetime import timedelta
+    wind_start = (datetime.now(timezone.utc) - timedelta(days=3)).strftime('%Y-%m-%d')
     ds = copernicusmarine.open_dataset(
         dataset_id=DS_WIND,
         variables=["eastward_wind", "northward_wind"],
-        start_datetime=today, end_datetime=today, **BBOX
+        start_datetime=wind_start, end_datetime=today, **BBOX
     )
-    da_u = ds["eastward_wind"].isel(time=0)
-    da_v = ds["northward_wind"].isel(time=0)
+    da_u = ds["eastward_wind"].isel(time=-1)   # en son mevcut dilim
+    da_v = ds["northward_wind"].isel(time=-1)
     if "depth" in da_u.dims:
         da_u = da_u.isel(depth=0); da_v = da_v.isel(depth=0)
     # Rüzgar gridi daha kaba (0.125°) — stride 1 yeterli
