@@ -1,156 +1,188 @@
 """
-fetch_currents.py — MaviMera v4.6
-İKİ MODEL: Akdeniz/Ege (med) + Marmara/Karadeniz (blk mrm-500m)
-- Akdeniz datası: cmems_mod_med_phy-* (Ege + Akdeniz)
-- Marmara datası: cmems_mod_blk_phy-*_mrm-500m (Marmara Denizi 500m U-TSS modeli)
+fetch_ocean.py — MaraMap v5.0
+Copernicus Marine'den SST + Klorofil + Dalga + Rüzgar çeker (vectorized).
+Çıktı: ocean.json → GitHub maramap-data repo'ya push edilir.
+
+Akıntı + MLD ayrı script'tedir (fetch_currents.py → currents.json), DOKUNULMAZ.
+
+KAPSAM: Akdeniz Copernicus modeli — Marmara + Ege + Akdeniz kıyıları.
+        (Karadeniz bu modelde yoktur; o hücreler NaN gelir, atlanır —
+         uygulamanın hedef kapsamı zaten Karadeniz'i dışlıyor.)
+
+═══════════════════════════════════════════════════════════════════════
+ÖNEMLİ — DATASET ID DOĞRULAMASI
+Aşağıdaki dataset_id değerleri, çalışan fetch_currents.py'deki
+'cmems_mod_med_phy-cur_anfc_4.2km_P1D-m' adlandırma kalıbına göre türetildi.
+Copernicus zaman zaman ID'leri sürümler. Bir fetch başarısız olursa,
+https://data.marine.copernicus.eu/products üzerinden güncel ID'yi doğrulayın.
+Her fetch BAĞIMSIZDIR: biri çökse bile diğerleri çalışır ve ocean.json yazılır.
+═══════════════════════════════════════════════════════════════════════
 """
 import copernicusmarine
-import xarray as xr
-import json, os, sys, tempfile
+import json, os, sys
 import numpy as np
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
-OUT  = os.path.join(os.path.dirname(__file__), '..', 'currents.json')
-TMPD = tempfile.mkdtemp()
+OUT = os.path.join(os.path.dirname(__file__), '..', 'ocean.json')
 
-now   = datetime.now(timezone.utc)
-today = now.strftime('%Y-%m-%dT00:00:00')
-end   = now.strftime('%Y-%m-%dT06:00:00')
+# Türkiye kıyı bölgesi (Akdeniz modeli kapsamı)
+BBOX = dict(
+    minimum_latitude  = 35.0,
+    maximum_latitude  = 42.0,
+    minimum_longitude = 25.0,
+    maximum_longitude = 37.0,
+)
 
-# Akdeniz + Ege kutusu (Marmara HARİÇ — onu blk modeli kapsar)
-MED_BBOX = dict(minimum_latitude=35.5, maximum_latitude=40.5,
-                minimum_longitude=25.5, maximum_longitude=36.0)
-# Marmara kutusu — mrm-500m dataset sınırları: lat 39.5-41.5, lng 25-30
-BLK_BBOX = dict(minimum_latitude=40.0, maximum_latitude=41.4,
-                minimum_longitude=26.5, maximum_longitude=29.9)
+# Dataset ID'leri — gerekirse Copernicus kataloğundan doğrulayın
+DS_SST  = "cmems_mod_med_phy-tem_anfc_4.2km_P1D-m"   # deniz sıcaklığı (thetao)
+DS_CHL  = "cmems_mod_med_bgc-pft_anfc_4.2km_P1D-m"   # klorofil (chl)
+DS_WAVE = "cmems_mod_med_wav_anfc_4.2km_PT1H-i"      # dalga (VHM0 = anlamlı dalga yük.)
+# Rüzgar: global L4 blended (Akdeniz dahil her yeri kapsar, 0.125°)
+DS_WIND = "cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H"
 
-print(f"[{now.isoformat()}] Basliyor — {today[:10]}")
-try: print(f"Versiyon: {copernicusmarine.__version__}")
-except: pass
+STRIDE = 2   # 4.2km × 2 ≈ 8.4km — harita için yeterli, JSON küçük kalır
 
-result = {'updated': now.isoformat(),
-          'currents': [], 'mld': [], 'bottom_t': [], 'salinity': []}
+today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+print(f"[{datetime.now(timezone.utc).isoformat()}] ocean.json — {today}")
+
+result = {
+    'updated': datetime.now(timezone.utc).isoformat(),
+    'sst': [], 'chl': [], 'waves': [], 'wind': [],
+}
 errors = []
-STRIDE = 3
 
-def fetch(dataset_id, variables, fname, bbox, **extra):
-    path = os.path.join(TMPD, fname)
-    if os.path.exists(path): os.remove(path)
-    kw = dict(dataset_id=dataset_id, variables=variables,
-              start_datetime=today, end_datetime=end,
-              output_filename=fname, output_directory=TMPD,
-              **bbox, **extra)
-    for param in [{'overwrite_output_data':True},{'force_download':True},{}]:
-        try:
-            copernicusmarine.subset(**kw, **param); break
-        except TypeError: continue
-    return xr.open_dataset(path)
 
-def add_currents(ds, stride, out_list):
-    u = ds['uo'].isel(time=0); v_ = ds['vo'].isel(time=0)
-    if 'depth' in u.dims: u, v_ = u.isel(depth=0), v_.isel(depth=0)
-    lats = ds['latitude'].values[::stride]; lons = ds['longitude'].values[::stride]
-    U,V = u.values[::stride,::stride], v_.values[::stride,::stride]
-    spd = np.sqrt(U**2+V**2); dir_ = (np.degrees(np.arctan2(U,V))+360)%360
-    n = 0
-    for i in range(len(lats)):
-        for j in range(len(lons)):
-            s = spd[i,j]
-            if np.isnan(U[i,j]) or s < 0.02: continue
-            out_list.append({'lat':round(float(lats[i]),3),'lng':round(float(lons[j]),3),
-                             'uo':round(float(U[i,j]),3),'vo':round(float(V[i,j]),3),
-                             'speed':round(float(s),3),'dir_deg':round(float(dir_[i,j]),1)})
-            n += 1
-    return n
-
-def add_scalar(ds, var, stride, key, vmin, vmax, out_list):
+def grid_rows(ds, var, value_key, stride=STRIDE, surface=True, transform=None):
+    """Bir değişkeni vectorized okuyup [{lat,lng,<value_key>}] satırları üretir."""
     da = ds[var].isel(time=0)
-    if 'depth' in da.dims: da = da.isel(depth=0)
-    lats = ds['latitude'].values[::stride]; lons = ds['longitude'].values[::stride]
-    A = da.values[::stride,::stride]; n = 0
+    if surface and "depth" in da.dims:
+        da = da.isel(depth=0)
+    lats = ds["latitude"].values[::stride]
+    lons = ds["longitude"].values[::stride]
+    vals = da.values[::stride, ::stride]
+    rows = []
     for i in range(len(lats)):
         for j in range(len(lons)):
-            v = A[i,j]
-            if np.isnan(v) or v<vmin or v>vmax: continue
-            out_list.append({'lat':round(float(lats[i]),3),'lng':round(float(lons[j]),3),
-                             key:round(float(v),3)}); n += 1
-    return n
+            v = vals[i, j]
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                continue
+            v = float(v)
+            if transform:
+                v = transform(v)
+            if v is None:
+                continue
+            rows.append({
+                'lat': round(float(lats[i]), 3),
+                'lng': round(float(lons[j]), 3),
+                value_key: round(v, 3),
+            })
+    return rows
 
-# ═══ AKDENİZ + EGE (med modeli) ═══════════════════════════
-print("\n── Akdeniz/Ege (med) ──")
-try:
-    ds = fetch('cmems_mod_med_phy-cur_anfc_4.2km_P1D-m', ['uo','vo'], 'med_cur.nc',
-               MED_BBOX, minimum_depth=1.0, maximum_depth=2.0)
-    print(f"  Akinti: {add_currents(ds, STRIDE, result['currents'])} nokta"); ds.close()
-except Exception as e:
-    errors.append(f"MED-cur: {e}"); print(f"  [HATA] {e}", file=sys.stderr)
-try:
-    ds = fetch('cmems_mod_med_phy-mld_anfc_4.2km_P1D-m', ['mlotst'], 'med_mld.nc', MED_BBOX)
-    print(f"  MLD: {add_scalar(ds,'mlotst',STRIDE,'depth',0,500,result['mld'])} nokta"); ds.close()
-except Exception as e:
-    errors.append(f"MED-mld: {e}"); print(f"  [HATA] {e}", file=sys.stderr)
-try:
-    ds = fetch('cmems_mod_med_phy-tem_anfc_4.2km_P1D-m', ['bottomT'], 'med_bt.nc', MED_BBOX)
-    print(f"  DipT: {add_scalar(ds,'bottomT',STRIDE,'bt',-2,40,result['bottom_t'])} nokta"); ds.close()
-except Exception as e:
-    errors.append(f"MED-bt: {e}"); print(f"  [HATA] {e}", file=sys.stderr)
-try:
-    ds = fetch('cmems_mod_med_phy-sal_anfc_4.2km_P1D-m', ['so'], 'med_sal.nc',
-               MED_BBOX, minimum_depth=1.0, maximum_depth=2.0)
-    print(f"  Tuzluluk: {add_scalar(ds,'so',STRIDE,'sal',1,45,result['salinity'])} nokta"); ds.close()
-except Exception as e:
-    errors.append(f"MED-sal: {e}"); print(f"  [HATA] {e}", file=sys.stderr)
 
-# ═══ MARMARA (blk mrm-500m modeli) ════════════════════════
-print("\n── Marmara (blk mrm-500m) ──")
-# Marmara 500m datasetleri daha ince — stride büyük tutalım (çok nokta olmasın)
-MRM_STRIDE = 8
+# ── 1. SST (deniz yüzey sıcaklığı) ───────────────────────────
 try:
-    ds = fetch('cmems_mod_blk_phy-cur_anfc_mrm-500m_P1D-m', ['uo','vo'], 'mrm_cur.nc',
-               BLK_BBOX, minimum_depth=1.0, maximum_depth=2.0)
-    print(f"  Marmara akinti: {add_currents(ds, MRM_STRIDE, result['currents'])} nokta"); ds.close()
+    ds = copernicusmarine.open_dataset(
+        dataset_id=DS_SST, variables=["thetao"],
+        start_datetime=today, end_datetime=today,
+        minimum_depth=1.0, maximum_depth=1.5, **BBOX
+    )
+    # Kelvin gelirse °C'ye çevir (Copernicus thetao zaten °C, ama güvence)
+    def _sst(v):
+        if v > 250 and v < 320:
+            v = v - 273.15
+        if v < -5 or v > 40:
+            return None
+        return v
+    result['sst'] = grid_rows(ds, "thetao", "sst", transform=_sst)
+    print(f"  SST: {len(result['sst'])} nokta")
+    ds.close()
 except Exception as e:
-    errors.append(f"MRM-cur: {e}"); print(f"  [HATA] {e}", file=sys.stderr)
-try:
-    ds = fetch('cmems_mod_blk_phy-sal_anfc_mrm-500m_P1D-m', ['so'], 'mrm_sal.nc',
-               BLK_BBOX, minimum_depth=1.0, maximum_depth=2.0)
-    print(f"  Marmara tuzluluk: {add_scalar(ds,'so',MRM_STRIDE,'sal',1,45,result['salinity'])} nokta"); ds.close()
-except Exception as e:
-    errors.append(f"MRM-sal: {e}"); print(f"  [HATA] {e}", file=sys.stderr)
-try:
-    # Marmara mrm modeli: thetao (sıcaklık), her hücrede en derin GEÇERLİ değeri dip kabul et
-    ds = fetch('cmems_mod_blk_phy-tem_anfc_mrm-500m_P1D-m', ['thetao'], 'mrm_bt.nc', BLK_BBOX)
-    da = ds['thetao'].isel(time=0)  # boyutlar: (depth, lat, lng)
-    blats = ds['latitude'].values[::MRM_STRIDE]
-    blons = ds['longitude'].values[::MRM_STRIDE]
-    arr = da.values  # (depth, lat, lng)
-    has_depth = ('depth' in da.dims) and arr.ndim == 3
-    n = 0
-    for ii, i in enumerate(range(0, len(ds['latitude'].values), MRM_STRIDE)):
-        for jj, j in enumerate(range(0, len(ds['longitude'].values), MRM_STRIDE)):
-            if has_depth:
-                col = arr[:, i, j]  # bu hücrenin tüm derinlikleri
-                valid = col[~np.isnan(col)]
-                if valid.size == 0: continue
-                v = float(valid[-1])  # en derin geçerli değer (dip)
-            else:
-                v = float(arr[i, j])
-                if np.isnan(v): continue
-            if v < -2 or v > 40: continue
-            result['bottom_t'].append({'lat':round(float(ds['latitude'].values[i]),3),
-                                       'lng':round(float(ds['longitude'].values[j]),3),
-                                       'bt':round(v,2)})
-            n += 1
-    print(f"  Marmara dipT: {n} nokta"); ds.close()
-except Exception as e:
-    errors.append(f"MRM-bt: {e}"); print(f"  [HATA] {e}", file=sys.stderr)
+    errors.append(f"SST: {e}")
+    print(f"  [HATA] SST: {e}", file=sys.stderr)
 
-# ═══ Kaydet ═══════════════════════════════════════════════
-if errors: result['errors'] = errors
-with open(OUT,'w') as f:
-    json.dump(result, f, ensure_ascii=False, separators=(',',':'))
-kb = os.path.getsize(OUT)//1024
-print(f"\nTamamlandi ({kb} KB): {len(result['currents'])} akinti "
-      f"| {len(result['mld'])} MLD | {len(result['bottom_t'])} dipT "
-      f"| {len(result['salinity'])} tuzluluk")
-if errors: print(f"HATALAR: {errors}")
+# ── 2. KLOROFİL ──────────────────────────────────────────────
+try:
+    ds = copernicusmarine.open_dataset(
+        dataset_id=DS_CHL, variables=["chl"],
+        start_datetime=today, end_datetime=today,
+        minimum_depth=1.0, maximum_depth=1.5, **BBOX
+    )
+    def _chl(v):
+        if v <= 0 or v > 50:
+            return None
+        return v
+    result['chl'] = grid_rows(ds, "chl", "chl", transform=_chl)
+    print(f"  Klorofil: {len(result['chl'])} nokta")
+    ds.close()
+except Exception as e:
+    errors.append(f"CHL: {e}")
+    print(f"  [HATA] Klorofil: {e}", file=sys.stderr)
+
+# ── 3. DALGA (anlamlı dalga yüksekliği) ──────────────────────
+try:
+    ds = copernicusmarine.open_dataset(
+        dataset_id=DS_WAVE, variables=["VHM0"],
+        start_datetime=today, end_datetime=today, **BBOX
+    )
+    def _wave(v):
+        if v < 0 or v > 20:
+            return None
+        return v
+    result['waves'] = grid_rows(ds, "VHM0", "wave", surface=False, transform=_wave)
+    print(f"  Dalga: {len(result['waves'])} nokta")
+    ds.close()
+except Exception as e:
+    errors.append(f"WAVE: {e}")
+    print(f"  [HATA] Dalga: {e}", file=sys.stderr)
+
+# ── 4. RÜZGAR (10m, u/v → hız km/h) ──────────────────────────
+try:
+    ds = copernicusmarine.open_dataset(
+        dataset_id=DS_WIND,
+        variables=["eastward_wind", "northward_wind"],
+        start_datetime=today, end_datetime=today, **BBOX
+    )
+    da_u = ds["eastward_wind"].isel(time=0)
+    da_v = ds["northward_wind"].isel(time=0)
+    if "depth" in da_u.dims:
+        da_u = da_u.isel(depth=0); da_v = da_v.isel(depth=0)
+    # Rüzgar gridi daha kaba (0.125°) — stride 1 yeterli
+    wlats = ds["latitude"].values
+    wlons = ds["longitude"].values
+    u = da_u.values
+    v = da_v.values
+    spd_ms = np.sqrt(u**2 + v**2)
+    rows = []
+    for i in range(len(wlats)):
+        for j in range(len(wlons)):
+            s = spd_ms[i, j]
+            if s is None or (isinstance(s, float) and np.isnan(s)):
+                continue
+            rows.append({
+                'lat': round(float(wlats[i]), 3),
+                'lng': round(float(wlons[j]), 3),
+                'wind': round(float(s) * 3.6, 1),    # m/s → km/h
+            })
+    result['wind'] = rows
+    print(f"  Rüzgar: {len(rows)} nokta")
+    ds.close()
+except Exception as e:
+    errors.append(f"WIND: {e}")
+    print(f"  [HATA] Rüzgar: {e}", file=sys.stderr)
+
+# ── Kaydet ───────────────────────────────────────────────────
+if errors:
+    result['errors'] = errors
+
+with open(OUT, 'w') as f:
+    json.dump(result, f, ensure_ascii=False, separators=(',', ':'))
+
+kb = os.path.getsize(OUT) // 1024
+print(f"Kaydedildi: {OUT} ({kb} KB) — "
+      f"{len(result['sst'])} SST, {len(result['chl'])} CHL, "
+      f"{len(result['waves'])} dalga, {len(result['wind'])} rüzgar")
+
+# Hiçbir veri çekilemezse hata koduyla çık (workflow kırmızı görünsün)
+if not any([result['sst'], result['chl'], result['waves'], result['wind']]):
+    print("Hiçbir veri çekilemedi!", file=sys.stderr)
+    sys.exit(1)
