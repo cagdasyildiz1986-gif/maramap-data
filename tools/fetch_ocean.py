@@ -19,7 +19,7 @@ Her fetch BAĞIMSIZDIR: biri çökse bile diğerleri çalışır ve ocean.json y
 ═══════════════════════════════════════════════════════════════════════
 """
 import copernicusmarine
-import json, os, sys
+import json, os, sys, math
 import numpy as np
 from datetime import datetime, timezone
 
@@ -65,12 +65,18 @@ def grid_rows(ds, var, value_key, stride=STRIDE, surface=True, transform=None):
     for i in range(len(lats)):
         for j in range(len(lons)):
             v = vals[i, j]
-            if v is None or (isinstance(v, float) and np.isnan(v)):
+            # numpy float NaN/inf de dahil — saf float'a çevirip finite kontrolü
+            if v is None:
                 continue
-            v = float(v)
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(v):      # NaN veya sonsuz → atla
+                continue
             if transform:
                 v = transform(v)
-            if v is None:
+            if v is None or not np.isfinite(v):
                 continue
             rows.append({
                 'lat': round(float(lats[i]), 3),
@@ -162,12 +168,18 @@ try:
     for i in range(len(wlats)):
         for j in range(len(wlons)):
             s = spd_ms[i, j]
-            if s is None or (isinstance(s, float) and np.isnan(s)):
+            if s is None:
+                continue
+            try:
+                s = float(s)
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(s):
                 continue
             rows.append({
                 'lat': round(float(wlats[i]), 3),
                 'lng': round(float(wlons[j]), 3),
-                'wind': round(float(s) * 3.6, 1),    # m/s → km/h
+                'wind': round(s * 3.6, 1),    # m/s → km/h
             })
     result['wind'] = rows
     print(f"  Rüzgar: {len(rows)} nokta")
@@ -180,8 +192,25 @@ except Exception as e:
 if errors:
     result['errors'] = errors
 
+# allow_nan=False → geçersiz JSON (NaN/Infinity) yazılırsa HATA ver, sessizce bozma.
+# Olası kaçak NaN'ları son bir kez temizle (güvenlik kemeri).
+def _clean(obj):
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, list):
+        return [_clean(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _clean(v) for k, v in obj.items()}
+    return obj
+
+result = _clean(result)
+# NaN içeren satırları tamamen at (value None olduysa o noktayı çıkar)
+for fld in ('sst', 'chl', 'waves', 'wind'):
+    key = {'sst':'sst','chl':'chl','waves':'wave','wind':'wind'}[fld]
+    result[fld] = [r for r in result[fld] if r.get(key) is not None]
+
 with open(OUT, 'w') as f:
-    json.dump(result, f, ensure_ascii=False, separators=(',', ':'))
+    json.dump(result, f, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
 
 kb = os.path.getsize(OUT) // 1024
 print(f"Kaydedildi: {OUT} ({kb} KB) — "
