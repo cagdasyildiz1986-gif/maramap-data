@@ -40,6 +40,9 @@ DS_CHL  = "cmems_mod_med_bgc-pft_anfc_4.2km_P1D-m"   # klorofil (chl)
 DS_WAVE = "cmems_mod_med_wav_anfc_4.2km_PT1H-i"      # dalga (VHM0 = anlamlı dalga yük.)
 # Rüzgar: global L4 blended (Akdeniz dahil her yeri kapsar, 0.125°)
 DS_WIND = "cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H"
+# Bathymetri (deniz tabanı derinliği) — Akdeniz modelinin STATİK dosyası.
+# deptho = sea floor depth (m). Değişmez; her çalıştırmada aynı gelir.
+DS_BATHY = "cmems_mod_med_phy_anfc_4.2km_static"
 
 STRIDE = 2   # 4.2km × 2 ≈ 8.4km — harita için yeterli, JSON küçük kalır
 
@@ -48,7 +51,7 @@ print(f"[{datetime.now(timezone.utc).isoformat()}] ocean.json — {today}")
 
 result = {
     'updated': datetime.now(timezone.utc).isoformat(),
-    'sst': [], 'chl': [], 'waves': [], 'wind': [],
+    'sst': [], 'chl': [], 'waves': [], 'wind': [], 'depth': [],
 }
 errors = []
 
@@ -188,6 +191,60 @@ except Exception as e:
     errors.append(f"WIND: {e}")
     print(f"  [HATA] Rüzgar: {e}", file=sys.stderr)
 
+# ── 5. BATHYMETRİ (deniz tabanı derinliği, statik) ───────────
+# deptho = sea floor depth (m). Statik dosya: zaman/derinlik boyutu yok.
+# Değişken adı modele göre 'deptho' veya 'bathymetry' olabilir; ikisini de dene.
+try:
+    ds = None
+    last_err = None
+    for varname in ("deptho", "bathymetry", "model_bathymetry"):
+        try:
+            ds = copernicusmarine.open_dataset(
+                dataset_id=DS_BATHY, variables=[varname], **BBOX
+            )
+            bvar = varname
+            break
+        except Exception as e:
+            last_err = e
+            ds = None
+    if ds is None:
+        raise RuntimeError(last_err or "deptho değişkeni bulunamadı")
+
+    da = ds[bvar]
+    # Olası fazladan boyutları (time/depth) düşür
+    for dim in list(da.dims):
+        if dim not in ("latitude", "longitude", "lat", "lon"):
+            da = da.isel({dim: 0})
+    lats = ds["latitude"].values[::STRIDE]
+    lons = ds["longitude"].values[::STRIDE]
+    vals = da.values[::STRIDE, ::STRIDE]
+    rows = []
+    for i in range(len(lats)):
+        for j in range(len(lons)):
+            v = vals[i, j]
+            if v is None:
+                continue
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(v):
+                continue
+            v = abs(v)                      # derinlik pozitif metre
+            if v < 0.5 or v > 6000:
+                continue
+            rows.append({
+                'lat': round(float(lats[i]), 3),
+                'lng': round(float(lons[j]), 3),
+                'depth': round(v, 1),
+            })
+    result['depth'] = rows
+    print(f"  Bathymetri: {len(rows)} nokta")
+    ds.close()
+except Exception as e:
+    errors.append(f"BATHY: {e}")
+    print(f"  [HATA] Bathymetri: {e}", file=sys.stderr)
+
 # ── Kaydet ───────────────────────────────────────────────────
 if errors:
     result['errors'] = errors
@@ -205,8 +262,8 @@ def _clean(obj):
 
 result = _clean(result)
 # NaN içeren satırları tamamen at (value None olduysa o noktayı çıkar)
-for fld in ('sst', 'chl', 'waves', 'wind'):
-    key = {'sst':'sst','chl':'chl','waves':'wave','wind':'wind'}[fld]
+for fld in ('sst', 'chl', 'waves', 'wind', 'depth'):
+    key = {'sst':'sst','chl':'chl','waves':'wave','wind':'wind','depth':'depth'}[fld]
     result[fld] = [r for r in result[fld] if r.get(key) is not None]
 
 with open(OUT, 'w') as f:
@@ -215,7 +272,8 @@ with open(OUT, 'w') as f:
 kb = os.path.getsize(OUT) // 1024
 print(f"Kaydedildi: {OUT} ({kb} KB) — "
       f"{len(result['sst'])} SST, {len(result['chl'])} CHL, "
-      f"{len(result['waves'])} dalga, {len(result['wind'])} rüzgar")
+      f"{len(result['waves'])} dalga, {len(result['wind'])} rüzgar, "
+      f"{len(result['depth'])} derinlik")
 
 # Hiçbir veri çekilemezse hata koduyla çık (workflow kırmızı görünsün)
 if not any([result['sst'], result['chl'], result['waves'], result['wind']]):
