@@ -81,6 +81,81 @@ except Exception as e:
     errors.append(f"Currents: {e}")
     print(f"  [HATA] Akinti: {e}", file=sys.stderr)
 
+# ── 1b. DİP SICAKLIK (bottomT) + TUZLULUK (so) ───────────────
+# Akıntı hücrelerine 'bt' (dip sıcaklık °C) ve 'sal' (tuzluluk PSU) ekler.
+# Hızlı eşleştirme için "lat_lng" anahtarlı indeks kullanılır.
+def _idx_key(la, lo):
+    return f"{round(float(la),3)}_{round(float(lo),3)}"
+
+cur_index = {}
+for r in result['currents']:
+    cur_index[_idx_key(r['lat'], r['lng'])] = r
+
+# Dip sıcaklık
+try:
+    dsb = copernicusmarine.open_dataset(
+        dataset_id="cmems_mod_med_phy-tem_anfc_4.2km_P1D-m",
+        variables=["bottomT"],
+        start_datetime=today, end_datetime=today, **BBOX
+    )
+    da_b = dsb["bottomT"].isel(time=0)
+    if "depth" in da_b.dims:
+        da_b = da_b.isel(depth=0)
+    blats = dsb["latitude"].values[::STRIDE]
+    blons = dsb["longitude"].values[::STRIDE]
+    bvals = da_b.values[::STRIDE, ::STRIDE]
+    n = 0
+    for i in range(len(blats)):
+        for j in range(len(blons)):
+            v = bvals[i, j]
+            if v is None or not np.isfinite(float(v)):
+                continue
+            v = float(v)
+            if v > 250:           # Kelvin → °C güvence
+                v -= 273.15
+            if v < -3 or v > 35:
+                continue
+            k = _idx_key(blats[i], blons[j])
+            if k in cur_index:
+                cur_index[k]['bt'] = round(v, 1); n += 1
+    print(f"  Dip sicaklik: {n} nokta eslesti")
+    dsb.close()
+except Exception as e:
+    errors.append(f"BottomT: {e}")
+    print(f"  [HATA] Dip sicaklik: {e}", file=sys.stderr)
+
+# Tuzluluk (yüzey)
+try:
+    dss = copernicusmarine.open_dataset(
+        dataset_id="cmems_mod_med_phy-sal_anfc_4.2km_P1D-m",
+        variables=["so"],
+        start_datetime=today, end_datetime=today,
+        minimum_depth=1.0, maximum_depth=1.5, **BBOX
+    )
+    da_s = dss["so"].isel(time=0)
+    if "depth" in da_s.dims:
+        da_s = da_s.isel(depth=0)
+    slats = dss["latitude"].values[::STRIDE]
+    slons = dss["longitude"].values[::STRIDE]
+    svals = da_s.values[::STRIDE, ::STRIDE]
+    n = 0
+    for i in range(len(slats)):
+        for j in range(len(slons)):
+            v = svals[i, j]
+            if v is None or not np.isfinite(float(v)):
+                continue
+            v = float(v)
+            if v < 5 or v > 45:    # makul tuzluluk PSU aralığı
+                continue
+            k = _idx_key(slats[i], slons[j])
+            if k in cur_index:
+                cur_index[k]['sal'] = round(v, 1); n += 1
+    print(f"  Tuzluluk: {n} nokta eslesti")
+    dss.close()
+except Exception as e:
+    errors.append(f"Salinity: {e}")
+    print(f"  [HATA] Tuzluluk: {e}", file=sys.stderr)
+
 # ── 2. KARISIK TABAKA DERINLIGI (MLD) ────────────────────────
 try:
     dsm = copernicusmarine.open_dataset(
@@ -126,5 +201,8 @@ with open(OUT, 'w') as f:
     json.dump(result, f, ensure_ascii=False, separators=(',', ':'))
 
 kb = os.path.getsize(OUT) // 1024
+_bt = sum(1 for r in result['currents'] if 'bt' in r)
+_sal = sum(1 for r in result['currents'] if 'sal' in r)
 print(f"Kaydedildi: {OUT} ({kb} KB) — "
-      f"{len(result['currents'])} akinti, {len(result['mld'])} MLD noktasi")
+      f"{len(result['currents'])} akinti, {len(result['mld'])} MLD, "
+      f"{_bt} dip-sicaklik, {_sal} tuzluluk noktasi")
