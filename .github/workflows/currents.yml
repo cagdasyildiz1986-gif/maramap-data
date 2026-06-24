@@ -2,8 +2,8 @@ name: MaraMap deniz verisi
 
 on:
   schedule:
-    - cron: '30 3 * * *'    # her gün 03:30 UTC (06:30 TR)
-    - cron: '30 12 * * *'   # her gün 12:30 UTC (15:30 TR) — gün içi tazeleme
+    - cron: '30 3 * * *'
+    - cron: '30 12 * * *'
   workflow_dispatch:
 
 permissions:
@@ -42,5 +42,7 @@ jobs:
           git config user.name "mavimera-bot"
           git config user.email "bot@mavimera.com"
           git add currents.json ocean.json
-          git diff --cached --quiet || git commit -m "Deniz verisi guncellendi $(date -u +%F_%H:%M)"
+          git diff --cached --quiet && echo "Degisiklik yok" && exit 0
+          git commit -m "Deniz verisi guncellendi $(date -u +%F_%H:%M)"
+          git pull --rebase --autostash origin main
           git push
