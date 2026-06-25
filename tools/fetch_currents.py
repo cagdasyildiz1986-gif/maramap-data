@@ -22,6 +22,20 @@ BBOX = dict(
     maximum_longitude = 36.25,
 )
 
+# ── KARADENİZ (Black Sea) modeli — Akdeniz modelinin kapsamadığı
+#    Karadeniz kıyısı + İstanbul Boğazı + iç Marmara kuzeyi ──
+BBOX_BLK = dict(
+    minimum_latitude  = 40.5,
+    maximum_latitude  = 43.2,
+    minimum_longitude = 27.0,
+    maximum_longitude = 42.0,
+)
+DS_CUR_BLK = "cmems_mod_blk_phy-cur_anfc_2.5km_P1D-m"   # uo, vo
+DS_TEM_BLK = "cmems_mod_blk_phy-tem_anfc_2.5km_P1D-m"   # bottomT
+DS_SAL_BLK = "cmems_mod_blk_phy-sal_anfc_2.5km_P1D-m"   # so
+DS_MLD_BLK = "cmems_mod_blk_phy-mld_anfc_2.5km_P1D-m"   # mlotst
+STRIDE_BLK = 3
+
 today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 print(f"[{datetime.now(timezone.utc).isoformat()}] Veri cekiliyor — {today}")
 
@@ -192,6 +206,123 @@ try:
 except Exception as e:
     errors.append(f"MLD: {e}")
     print(f"  [HATA] MLD: {e}", file=sys.stderr)
+
+# ── 3. KARADENİZ (Black Sea) — akıntı + dip sıcaklık + tuzluluk + MLD ──
+# Akdeniz modelinin boş bıraktığı Karadeniz + Boğaz + iç Marmara kuzeyini
+# doldurur. Akıntı satırlarına bt/sal gömülür (currents formatıyla aynı).
+def _blk_key(la, lo):
+    return f"{round(float(la),3)}_{round(float(lo),3)}"
+
+try:
+    blk_rows = {}
+    # Akıntı (uo/vo)
+    dsc = copernicusmarine.open_dataset(
+        dataset_id=DS_CUR_BLK, variables=["uo", "vo"],
+        start_datetime=today, end_datetime=today,
+        minimum_depth=1.0, maximum_depth=1.5, **BBOX_BLK
+    )
+    da_uo = dsc["uo"].isel(time=0)
+    da_vo = dsc["vo"].isel(time=0)
+    if "depth" in da_uo.dims:
+        da_uo = da_uo.isel(depth=0); da_vo = da_vo.isel(depth=0)
+    clats = dsc["latitude"].values[::STRIDE_BLK]
+    clons = dsc["longitude"].values[::STRIDE_BLK]
+    uo = da_uo.values[::STRIDE_BLK, ::STRIDE_BLK]
+    vo = da_vo.values[::STRIDE_BLK, ::STRIDE_BLK]
+    spd = np.sqrt(uo**2 + vo**2)
+    ddeg = (np.degrees(np.arctan2(uo, vo)) + 360) % 360
+    for i in range(len(clats)):
+        for j in range(len(clons)):
+            u, v, s = uo[i, j], vo[i, j], spd[i, j]
+            if np.isnan(u) or np.isnan(v) or s < 0.02:
+                continue
+            k = _blk_key(clats[i], clons[j])
+            blk_rows[k] = {
+                'lat': round(float(clats[i]), 3),
+                'lng': round(float(clons[j]), 3),
+                'uo': round(float(u), 3), 'vo': round(float(v), 3),
+                'speed': round(float(s), 3),
+                'dir_deg': round(float(ddeg[i, j]), 1),
+            }
+    dsc.close()
+
+    # Dip sıcaklık (bottomT) → blk_rows'a 'bt'
+    try:
+        dsb = copernicusmarine.open_dataset(
+            dataset_id=DS_TEM_BLK, variables=["bottomT"],
+            start_datetime=today, end_datetime=today, **BBOX_BLK)
+        da_b = dsb["bottomT"].isel(time=0)
+        if "depth" in da_b.dims: da_b = da_b.isel(depth=0)
+        blats = dsb["latitude"].values[::STRIDE_BLK]
+        blons = dsb["longitude"].values[::STRIDE_BLK]
+        bvals = da_b.values[::STRIDE_BLK, ::STRIDE_BLK]
+        for i in range(len(blats)):
+            for j in range(len(blons)):
+                v = bvals[i, j]
+                if v is None or not np.isfinite(float(v)): continue
+                v = float(v)
+                if v > 250: v -= 273.15
+                if v < -3 or v > 35: continue
+                k = _blk_key(blats[i], blons[j])
+                if k in blk_rows: blk_rows[k]['bt'] = round(v, 1)
+        dsb.close()
+    except Exception as e:
+        errors.append(f"BLK bottomT: {e}")
+
+    # Tuzluluk (so) → blk_rows'a 'sal'
+    try:
+        dss = copernicusmarine.open_dataset(
+            dataset_id=DS_SAL_BLK, variables=["so"],
+            start_datetime=today, end_datetime=today,
+            minimum_depth=1.0, maximum_depth=1.5, **BBOX_BLK)
+        da_s = dss["so"].isel(time=0)
+        if "depth" in da_s.dims: da_s = da_s.isel(depth=0)
+        slats = dss["latitude"].values[::STRIDE_BLK]
+        slons = dss["longitude"].values[::STRIDE_BLK]
+        svals = da_s.values[::STRIDE_BLK, ::STRIDE_BLK]
+        for i in range(len(slats)):
+            for j in range(len(slons)):
+                v = svals[i, j]
+                if v is None or not np.isfinite(float(v)): continue
+                v = float(v)
+                if v < 5 or v > 45: continue
+                k = _blk_key(slats[i], slons[j])
+                if k in blk_rows: blk_rows[k]['sal'] = round(v, 1)
+        dss.close()
+    except Exception as e:
+        errors.append(f"BLK salinity: {e}")
+
+    result['currents'].extend(blk_rows.values())
+    _b = sum(1 for r in blk_rows.values() if 'bt' in r)
+    _s = sum(1 for r in blk_rows.values() if 'sal' in r)
+    print(f"  [Karadeniz] {len(blk_rows)} akinti, {_b} dip-sic, {_s} tuzluluk eklendi")
+
+    # MLD (Karadeniz)
+    try:
+        dsm = copernicusmarine.open_dataset(
+            dataset_id=DS_MLD_BLK, variables=["mlotst"],
+            start_datetime=today, end_datetime=today, **BBOX_BLK)
+        da_m = dsm["mlotst"].isel(time=0)
+        if "depth" in da_m.dims: da_m = da_m.isel(depth=0)
+        mlats = dsm["latitude"].values[::STRIDE_BLK]
+        mlons = dsm["longitude"].values[::STRIDE_BLK]
+        mvals = da_m.values[::STRIDE_BLK, ::STRIDE_BLK]
+        nm = 0
+        for i in range(len(mlats)):
+            for j in range(len(mlons)):
+                v = mvals[i, j]
+                if v is None or not np.isfinite(float(v)) or float(v) <= 0: continue
+                result['mld'].append({'lat': round(float(mlats[i]), 3),
+                                      'lng': round(float(mlons[j]), 3),
+                                      'depth': round(float(v), 1)})
+                nm += 1
+        print(f"  [Karadeniz] MLD: {nm} nokta eklendi")
+        dsm.close()
+    except Exception as e:
+        errors.append(f"BLK MLD: {e}")
+except Exception as e:
+    errors.append(f"BLK currents: {e}")
+    print(f"  [HATA] Karadeniz akinti: {e}", file=sys.stderr)
 
 # ── Kaydet ───────────────────────────────────────────────────
 if errors:
