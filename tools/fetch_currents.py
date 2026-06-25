@@ -54,6 +54,9 @@ DS_CUR_MRM = "cmems_mod_blk_phy-cur_anfc_mrm-500m_P1D-m"   # uo, vo (doğruland�
 DS_TEM_MRM_ADAYLAR = [
     "cmems_mod_blk_phy-tem_anfc_mrm-500m_P1D-m",
     "cmems_mod_blk_phy-temp_anfc_mrm-500m_P1D-m",
+    # mrm-500m'de bottomT yoksa 2.5km -temp datasetine düş (bottomT KESİN var;
+    # katalogda "Sea water potential temperature at sea floor" olarak doğrulandı)
+    "cmems_mod_blk_phy-temp_anfc_2.5km_P1D-m",
 ]
 DS_SAL_MRM = "cmems_mod_blk_phy-sal_anfc_mrm-500m_P1D-m"   # so
 STRIDE_MRM = 8   # 500m × 8 = 4km — iç Marmara için yeterli, JSON şişmesin
@@ -268,14 +271,17 @@ try:
             }
     dsc.close()
 
-    # Dip sıcaklık (bottomT) → blk_rows'a 'bt' (dataset ID belirsiz, adaylar denenir)
+    # Dip sıcaklık (bottomT) → blk_rows'a 'bt'. -temp datasetinde bottomT
+    # KESİN var (katalog: "...at sea floor"). Yine de değişken kontrolü yap.
     dsb = None; _bvar = "bottomT"
     for _dsid in DS_TEM_BLK_ADAYLAR:
         try:
-            dsb = copernicusmarine.open_dataset(
+            _try = copernicusmarine.open_dataset(
                 dataset_id=_dsid, variables=["bottomT"],
                 start_datetime=today, end_datetime=today, **BBOX_BLK)
-            break
+            if "bottomT" in _try.variables or "bottomT" in getattr(_try, "data_vars", {}):
+                dsb = _try; break
+            _try.close()
         except Exception as e:
             errors.append(f"BLK bottomT dene {_dsid}: {e}")
             dsb = None
@@ -388,14 +394,17 @@ try:
             }
     dsc.close()
 
-    # Marmara dip sıcaklık (bottomT) — aday ID'ler
+    # Marmara dip sıcaklık (bottomT) — aday ID'ler.
+    # mrm-500m açılsa bile içinde bottomT değişkeni YOKSA sonraki adaya geç.
     dsb = None
     for _dsid in DS_TEM_MRM_ADAYLAR:
         try:
-            dsb = copernicusmarine.open_dataset(
+            _try = copernicusmarine.open_dataset(
                 dataset_id=_dsid, variables=["bottomT"],
                 start_datetime=today, end_datetime=today, **BBOX_MRM)
-            break
+            if "bottomT" in _try.variables or "bottomT" in getattr(_try, "data_vars", {}):
+                dsb = _try; break
+            _try.close()
         except Exception as e:
             errors.append(f"MRM bottomT dene {_dsid}: {e}"); dsb = None
     if dsb is not None:
