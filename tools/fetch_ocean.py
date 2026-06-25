@@ -44,6 +44,21 @@ DS_WIND = "cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H"
 # deptho = sea floor depth (m). Değişmez; her çalıştırmada aynı gelir.
 DS_BATHY = "cmems_mod_med_phy_anfc_4.2km_static"
 
+# ── KARADENİZ (Black Sea) modeli — Akdeniz modelinin kapsamadığı
+#    Karadeniz kıyısı + İstanbul Boğazı + iç Marmara kuzeyi için ──
+# Black Sea analiz-tahmin ürünleri ~2.5km çözünürlük.
+BBOX_BLK = dict(
+    minimum_latitude  = 40.5,   # Boğaz/iç Marmara kuzeyi + Karadeniz kıyısı
+    maximum_latitude  = 43.2,
+    minimum_longitude = 27.0,   # Boğaz'dan doğuya tüm Türkiye Karadeniz kıyısı
+    maximum_longitude = 42.0,
+)
+DS_SST_BLK   = "cmems_mod_blk_phy-tem_anfc_2.5km_P1D-m"   # thetao + bottomT
+DS_CHL_BLK   = "cmems_mod_blk_bgc-pft_anfc_2.5km_P1D-m"   # chl
+DS_WAVE_BLK  = "cmems_mod_blk_wav_anfc_2.5km_PT1H-i"      # VHM0
+DS_BATHY_BLK = "cmems_mod_blk_phy_anfc_2.5km_static"      # deptho
+STRIDE_BLK = 3   # 2.5km × 3 ≈ 7.5km — Akdeniz gridine yakın yoğunluk
+
 STRIDE = 2   # 4.2km × 2 ≈ 8.4km — harita için yeterli, JSON küçük kalır
 
 today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
@@ -89,6 +104,15 @@ def grid_rows(ds, var, value_key, stride=STRIDE, surface=True, transform=None):
     return rows
 
 
+def _sst(v):
+    """Kelvin gelirse °C'ye çevir (Copernicus thetao zaten °C, ama güvence)."""
+    if v > 250 and v < 320:
+        v = v - 273.15
+    if v < -5 or v > 40:
+        return None
+    return v
+
+
 # ── 1. SST (deniz yüzey sıcaklığı) ───────────────────────────
 try:
     ds = copernicusmarine.open_dataset(
@@ -96,13 +120,6 @@ try:
         start_datetime=today, end_datetime=today,
         minimum_depth=1.0, maximum_depth=1.5, **BBOX
     )
-    # Kelvin gelirse °C'ye çevir (Copernicus thetao zaten °C, ama güvence)
-    def _sst(v):
-        if v > 250 and v < 320:
-            v = v - 273.15
-        if v < -5 or v > 40:
-            return None
-        return v
     result['sst'] = grid_rows(ds, "thetao", "sst", transform=_sst)
     print(f"  SST: {len(result['sst'])} nokta")
     ds.close()
@@ -244,6 +261,83 @@ try:
 except Exception as e:
     errors.append(f"BATHY: {e}")
     print(f"  [HATA] Bathymetri: {e}", file=sys.stderr)
+
+# ── 6. KARADENİZ (Black Sea) — Akdeniz modelinin boş bıraktığı
+#       Karadeniz + Boğaz + iç Marmara kuzeyini doldurur ──
+# Her biri bağımsız + graceful. Veriyi mevcut dizilere EKLER (append);
+# frontend en-yakın-komşu kullandığı için ek noktalar sorunsuz çalışır.
+def _blk_add(dataset, var, value_key, target, surface=True, transform=None, depthrange=None):
+    try:
+        kw = dict(dataset_id=dataset, variables=[var],
+                  start_datetime=today, end_datetime=today, **BBOX_BLK)
+        if depthrange:
+            kw['minimum_depth'], kw['maximum_depth'] = depthrange
+        ds = copernicusmarine.open_dataset(**kw)
+        rows = grid_rows(ds, var, value_key, stride=STRIDE_BLK,
+                         surface=surface, transform=transform)
+        target.extend(rows)
+        print(f"  [Karadeniz] {value_key}: {len(rows)} nokta eklendi")
+        ds.close()
+        return len(rows)
+    except Exception as e:
+        errors.append(f"BLK {value_key}: {e}")
+        print(f"  [HATA] Karadeniz {value_key}: {e}", file=sys.stderr)
+        return 0
+
+# SST (Karadeniz)
+_blk_add(DS_SST_BLK, "thetao", "sst", result['sst'],
+         transform=_sst, depthrange=(1.0, 1.5))
+# Klorofil (Karadeniz)
+def _chl_pass(v):
+    return v if (v is not None and 0 < v <= 50) else None
+_blk_add(DS_CHL_BLK, "chl", "chl", result['chl'], transform=_chl_pass)
+# Dalga (Karadeniz)
+_blk_add(DS_WAVE_BLK, "VHM0", "wave", result['waves'], surface=False)
+# Bathymetri (Karadeniz, statik)
+def _depth_pos(v):
+    v = abs(v)
+    return v if (0.5 < v <= 6000) else None
+try:
+    dsb = None
+    for vn in ("deptho", "bathymetry", "model_bathymetry"):
+        try:
+            dsb = copernicusmarine.open_dataset(dataset_id=DS_BATHY_BLK,
+                                                variables=[vn], **BBOX_BLK)
+            bvn = vn; break
+        except Exception:
+            dsb = None
+    if dsb is not None:
+        da = dsb[bvn]
+        for dim in list(da.dims):
+            if dim not in ("latitude", "longitude", "lat", "lon"):
+                da = da.isel({dim: 0})
+        blats = dsb["latitude"].values[::STRIDE_BLK]
+        blons = dsb["longitude"].values[::STRIDE_BLK]
+        bvals = da.values[::STRIDE_BLK, ::STRIDE_BLK]
+        n = 0
+        for i in range(len(blats)):
+            for j in range(len(blons)):
+                v = bvals[i, j]
+                if v is None:
+                    continue
+                try:
+                    v = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if not np.isfinite(v):
+                    continue
+                v = abs(v)
+                if v < 0.5 or v > 6000:
+                    continue
+                result['depth'].append({'lat': round(float(blats[i]), 3),
+                                        'lng': round(float(blons[j]), 3),
+                                        'depth': round(v, 1)})
+                n += 1
+        print(f"  [Karadeniz] depth: {n} nokta eklendi")
+        dsb.close()
+except Exception as e:
+    errors.append(f"BLK depth: {e}")
+    print(f"  [HATA] Karadeniz depth: {e}", file=sys.stderr)
 
 # ── Kaydet ───────────────────────────────────────────────────
 if errors:
