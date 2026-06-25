@@ -32,9 +32,31 @@ BBOX_BLK = dict(
 )
 DS_CUR_BLK = "cmems_mod_blk_phy-cur_anfc_2.5km_P1D-m"   # uo, vo
 DS_TEM_BLK = "cmems_mod_blk_phy-tem_anfc_2.5km_P1D-m"   # bottomT
+# Black Sea sıcaklık/bottomT — DOĞRULANDI: -temp (2.5km)
+DS_TEM_BLK_ADAYLAR = [
+    "cmems_mod_blk_phy-temp_anfc_2.5km_P1D-m",
+    "cmems_mod_blk_phy-thetao_anfc_2.5km_P1D-m",
+    "cmems_mod_blk_phy-tem_anfc_2.5km_P1D-m",
+]
 DS_SAL_BLK = "cmems_mod_blk_phy-sal_anfc_2.5km_P1D-m"   # so
 DS_MLD_BLK = "cmems_mod_blk_phy-mld_anfc_2.5km_P1D-m"   # mlotst
 STRIDE_BLK = 3
+
+# ── MARMARA DENİZİ alt-modeli (500m) — iç Marmara/körfezler ──
+# Copernicus kataloğunda doğrulandı: cmems_mod_blk_phy-cur_anfc_mrm-500m_P1D-m
+BBOX_MRM = dict(
+    minimum_latitude  = 40.2,
+    maximum_latitude  = 41.3,
+    minimum_longitude = 26.0,
+    maximum_longitude = 30.2,
+)
+DS_CUR_MRM = "cmems_mod_blk_phy-cur_anfc_mrm-500m_P1D-m"   # uo, vo (doğrulandı)
+DS_TEM_MRM_ADAYLAR = [
+    "cmems_mod_blk_phy-tem_anfc_mrm-500m_P1D-m",
+    "cmems_mod_blk_phy-temp_anfc_mrm-500m_P1D-m",
+]
+DS_SAL_MRM = "cmems_mod_blk_phy-sal_anfc_mrm-500m_P1D-m"   # so
+STRIDE_MRM = 8   # 500m × 8 = 4km — iç Marmara için yeterli, JSON şişmesin
 
 today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 print(f"[{datetime.now(timezone.utc).isoformat()}] Veri cekiliyor — {today}")
@@ -246,28 +268,36 @@ try:
             }
     dsc.close()
 
-    # Dip sıcaklık (bottomT) → blk_rows'a 'bt'
-    try:
-        dsb = copernicusmarine.open_dataset(
-            dataset_id=DS_TEM_BLK, variables=["bottomT"],
-            start_datetime=today, end_datetime=today, **BBOX_BLK)
-        da_b = dsb["bottomT"].isel(time=0)
-        if "depth" in da_b.dims: da_b = da_b.isel(depth=0)
-        blats = dsb["latitude"].values[::STRIDE_BLK]
-        blons = dsb["longitude"].values[::STRIDE_BLK]
-        bvals = da_b.values[::STRIDE_BLK, ::STRIDE_BLK]
-        for i in range(len(blats)):
-            for j in range(len(blons)):
-                v = bvals[i, j]
-                if v is None or not np.isfinite(float(v)): continue
-                v = float(v)
-                if v > 250: v -= 273.15
-                if v < -3 or v > 35: continue
-                k = _blk_key(blats[i], blons[j])
-                if k in blk_rows: blk_rows[k]['bt'] = round(v, 1)
-        dsb.close()
-    except Exception as e:
-        errors.append(f"BLK bottomT: {e}")
+    # Dip sıcaklık (bottomT) → blk_rows'a 'bt' (dataset ID belirsiz, adaylar denenir)
+    dsb = None; _bvar = "bottomT"
+    for _dsid in DS_TEM_BLK_ADAYLAR:
+        try:
+            dsb = copernicusmarine.open_dataset(
+                dataset_id=_dsid, variables=["bottomT"],
+                start_datetime=today, end_datetime=today, **BBOX_BLK)
+            break
+        except Exception as e:
+            errors.append(f"BLK bottomT dene {_dsid}: {e}")
+            dsb = None
+    if dsb is not None:
+        try:
+            da_b = dsb["bottomT"].isel(time=0)
+            if "depth" in da_b.dims: da_b = da_b.isel(depth=0)
+            blats = dsb["latitude"].values[::STRIDE_BLK]
+            blons = dsb["longitude"].values[::STRIDE_BLK]
+            bvals = da_b.values[::STRIDE_BLK, ::STRIDE_BLK]
+            for i in range(len(blats)):
+                for j in range(len(blons)):
+                    v = bvals[i, j]
+                    if v is None or not np.isfinite(float(v)): continue
+                    v = float(v)
+                    if v > 250: v -= 273.15
+                    if v < -3 or v > 35: continue
+                    k = _blk_key(blats[i], blons[j])
+                    if k in blk_rows: blk_rows[k]['bt'] = round(v, 1)
+            dsb.close()
+        except Exception as e:
+            errors.append(f"BLK bottomT oku: {e}")
 
     # Tuzluluk (so) → blk_rows'a 'sal'
     try:
@@ -323,6 +353,101 @@ try:
 except Exception as e:
     errors.append(f"BLK currents: {e}")
     print(f"  [HATA] Karadeniz akinti: {e}", file=sys.stderr)
+
+# ── 4. MARMARA DENİZİ (500m alt-model) — iç Marmara/körfez akıntı+sıc+tuz ──
+# Akdeniz ve Black Sea 2.5km modellerinin tam çözemediği iç Marmara'yı doldurur.
+try:
+    mrm_rows = {}
+    dsc = copernicusmarine.open_dataset(
+        dataset_id=DS_CUR_MRM, variables=["uo", "vo"],
+        start_datetime=today, end_datetime=today,
+        minimum_depth=1.0, maximum_depth=2.0, **BBOX_MRM
+    )
+    da_uo = dsc["uo"].isel(time=0)
+    da_vo = dsc["vo"].isel(time=0)
+    if "depth" in da_uo.dims:
+        da_uo = da_uo.isel(depth=0); da_vo = da_vo.isel(depth=0)
+    clats = dsc["latitude"].values[::STRIDE_MRM]
+    clons = dsc["longitude"].values[::STRIDE_MRM]
+    uo = da_uo.values[::STRIDE_MRM, ::STRIDE_MRM]
+    vo = da_vo.values[::STRIDE_MRM, ::STRIDE_MRM]
+    spd = np.sqrt(uo**2 + vo**2)
+    ddeg = (np.degrees(np.arctan2(uo, vo)) + 360) % 360
+    for i in range(len(clats)):
+        for j in range(len(clons)):
+            u, v, s = uo[i, j], vo[i, j], spd[i, j]
+            if np.isnan(u) or np.isnan(v):
+                continue
+            k = _blk_key(clats[i], clons[j])
+            mrm_rows[k] = {
+                'lat': round(float(clats[i]), 3),
+                'lng': round(float(clons[j]), 3),
+                'uo': round(float(u), 3), 'vo': round(float(v), 3),
+                'speed': round(float(s), 3),
+                'dir_deg': round(float(ddeg[i, j]), 1),
+            }
+    dsc.close()
+
+    # Marmara dip sıcaklık (bottomT) — aday ID'ler
+    dsb = None
+    for _dsid in DS_TEM_MRM_ADAYLAR:
+        try:
+            dsb = copernicusmarine.open_dataset(
+                dataset_id=_dsid, variables=["bottomT"],
+                start_datetime=today, end_datetime=today, **BBOX_MRM)
+            break
+        except Exception as e:
+            errors.append(f"MRM bottomT dene {_dsid}: {e}"); dsb = None
+    if dsb is not None:
+        try:
+            da_b = dsb["bottomT"].isel(time=0)
+            if "depth" in da_b.dims: da_b = da_b.isel(depth=0)
+            blats = dsb["latitude"].values[::STRIDE_MRM]
+            blons = dsb["longitude"].values[::STRIDE_MRM]
+            bvals = da_b.values[::STRIDE_MRM, ::STRIDE_MRM]
+            for i in range(len(blats)):
+                for j in range(len(blons)):
+                    vv = bvals[i, j]
+                    if vv is None or not np.isfinite(float(vv)): continue
+                    vv = float(vv)
+                    if vv > 250: vv -= 273.15
+                    if vv < -3 or vv > 35: continue
+                    k = _blk_key(blats[i], blons[j])
+                    if k in mrm_rows: mrm_rows[k]['bt'] = round(vv, 1)
+            dsb.close()
+        except Exception as e:
+            errors.append(f"MRM bottomT oku: {e}")
+
+    # Marmara tuzluluk (so)
+    try:
+        dss = copernicusmarine.open_dataset(
+            dataset_id=DS_SAL_MRM, variables=["so"],
+            start_datetime=today, end_datetime=today,
+            minimum_depth=1.0, maximum_depth=2.0, **BBOX_MRM)
+        da_s = dss["so"].isel(time=0)
+        if "depth" in da_s.dims: da_s = da_s.isel(depth=0)
+        slats = dss["latitude"].values[::STRIDE_MRM]
+        slons = dss["longitude"].values[::STRIDE_MRM]
+        svals = da_s.values[::STRIDE_MRM, ::STRIDE_MRM]
+        for i in range(len(slats)):
+            for j in range(len(slons)):
+                vv = svals[i, j]
+                if vv is None or not np.isfinite(float(vv)): continue
+                vv = float(vv)
+                if vv < 5 or vv > 45: continue
+                k = _blk_key(slats[i], slons[j])
+                if k in mrm_rows: mrm_rows[k]['sal'] = round(vv, 1)
+        dss.close()
+    except Exception as e:
+        errors.append(f"MRM salinity: {e}")
+
+    result['currents'].extend(mrm_rows.values())
+    _b = sum(1 for r in mrm_rows.values() if 'bt' in r)
+    _s = sum(1 for r in mrm_rows.values() if 'sal' in r)
+    print(f"  [Marmara-500m] {len(mrm_rows)} akinti, {_b} dip-sic, {_s} tuzluluk eklendi")
+except Exception as e:
+    errors.append(f"MRM currents: {e}")
+    print(f"  [HATA] Marmara-500m akinti: {e}", file=sys.stderr)
 
 # ── Kaydet ───────────────────────────────────────────────────
 if errors:
