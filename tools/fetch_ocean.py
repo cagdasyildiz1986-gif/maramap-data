@@ -54,10 +54,29 @@ BBOX_BLK = dict(
     maximum_longitude = 42.0,
 )
 DS_SST_BLK   = "cmems_mod_blk_phy-tem_anfc_2.5km_P1D-m"   # thetao + bottomT
+# Black Sea sıcaklık — Copernicus kataloğunda DOĞRULANDI: -temp (P1D-m)
+DS_SST_BLK_ADAYLAR = [
+    "cmems_mod_blk_phy-temp_anfc_2.5km_P1D-m",
+    "cmems_mod_blk_phy-thetao_anfc_2.5km_P1D-m",
+    "cmems_mod_blk_phy-tem_anfc_2.5km_P1D-m",
+]
 DS_CHL_BLK   = "cmems_mod_blk_bgc-pft_anfc_2.5km_P1D-m"   # chl
 DS_WAVE_BLK  = "cmems_mod_blk_wav_anfc_2.5km_PT1H-i"      # VHM0
 DS_BATHY_BLK = "cmems_mod_blk_phy_anfc_2.5km_static"      # deptho
 STRIDE_BLK = 3   # 2.5km × 3 ≈ 7.5km — Akdeniz gridine yakın yoğunluk
+
+# ── MARMARA DENİZİ alt-modeli (500m) SST — iç Marmara ──
+BBOX_MRM = dict(
+    minimum_latitude  = 40.2,
+    maximum_latitude  = 41.3,
+    minimum_longitude = 26.0,
+    maximum_longitude = 30.2,
+)
+DS_SST_MRM_ADAYLAR = [
+    "cmems_mod_blk_phy-tem_anfc_mrm-500m_P1D-m",
+    "cmems_mod_blk_phy-temp_anfc_mrm-500m_P1D-m",
+]
+STRIDE_MRM = 8   # 500m × 8 = 4km
 
 STRIDE = 2   # 4.2km × 2 ≈ 8.4km — harita için yeterli, JSON küçük kalır
 
@@ -266,26 +285,36 @@ except Exception as e:
 #       Karadeniz + Boğaz + iç Marmara kuzeyini doldurur ──
 # Her biri bağımsız + graceful. Veriyi mevcut dizilere EKLER (append);
 # frontend en-yakın-komşu kullandığı için ek noktalar sorunsuz çalışır.
-def _blk_add(dataset, var, value_key, target, surface=True, transform=None, depthrange=None):
-    try:
-        kw = dict(dataset_id=dataset, variables=[var],
-                  start_datetime=today, end_datetime=today, **BBOX_BLK)
-        if depthrange:
-            kw['minimum_depth'], kw['maximum_depth'] = depthrange
-        ds = copernicusmarine.open_dataset(**kw)
-        rows = grid_rows(ds, var, value_key, stride=STRIDE_BLK,
-                         surface=surface, transform=transform)
-        target.extend(rows)
-        print(f"  [Karadeniz] {value_key}: {len(rows)} nokta eklendi")
-        ds.close()
-        return len(rows)
-    except Exception as e:
-        errors.append(f"BLK {value_key}: {e}")
-        print(f"  [HATA] Karadeniz {value_key}: {e}", file=sys.stderr)
-        return 0
+def _blk_add(dataset, var, value_key, target, surface=True, transform=None,
+             depthrange=None, bbox=None, stride=None):
+    # dataset bir liste ise sırayla dene; var birden çok aday ise (liste) onu da dene
+    ds_list = dataset if isinstance(dataset, (list, tuple)) else [dataset]
+    var_list = var if isinstance(var, (list, tuple)) else [var]
+    _bbox = bbox if bbox is not None else BBOX_BLK
+    _stride = stride if stride is not None else STRIDE_BLK
+    for dsid in ds_list:
+        for vname in var_list:
+            try:
+                kw = dict(dataset_id=dsid, variables=[vname],
+                          start_datetime=today, end_datetime=today, **_bbox)
+                if depthrange:
+                    kw['minimum_depth'], kw['maximum_depth'] = depthrange
+                ds = copernicusmarine.open_dataset(**kw)
+                rows = grid_rows(ds, vname, value_key, stride=_stride,
+                                 surface=surface, transform=transform)
+                target.extend(rows)
+                print(f"  [{value_key}] {len(rows)} nokta eklendi ({dsid}/{vname})")
+                ds.close()
+                return len(rows)
+            except Exception as e:
+                last = e
+                continue
+    errors.append(f"BLK {value_key}: {last}")
+    print(f"  [HATA] {value_key}: {last}", file=sys.stderr)
+    return 0
 
 # SST (Karadeniz)
-_blk_add(DS_SST_BLK, "thetao", "sst", result['sst'],
+_blk_add(DS_SST_BLK_ADAYLAR, "thetao", "sst", result['sst'],
          transform=_sst, depthrange=(1.0, 1.5))
 # Klorofil (Karadeniz)
 def _chl_pass(v):
@@ -338,6 +367,10 @@ try:
 except Exception as e:
     errors.append(f"BLK depth: {e}")
     print(f"  [HATA] Karadeniz depth: {e}", file=sys.stderr)
+
+# ── 7. MARMARA DENİZİ (500m) SST — iç Marmara yüzey sıcaklığı ──
+_blk_add(DS_SST_MRM_ADAYLAR, "thetao", "sst", result['sst'],
+         transform=_sst, depthrange=(1.0, 2.0), bbox=BBOX_MRM, stride=STRIDE_MRM)
 
 # ── Kaydet ───────────────────────────────────────────────────
 if errors:
