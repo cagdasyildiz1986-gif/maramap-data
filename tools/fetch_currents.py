@@ -394,38 +394,53 @@ try:
             }
     dsc.close()
 
-    # Marmara dip sıcaklık (bottomT) — aday ID'ler.
-    # mrm-500m açılsa bile içinde bottomT değişkeni YOKSA sonraki adaya geç.
-    dsb = None
+    # Marmara DİP SICAKLIK — mrm-500m'de hazır 'bottomT' değişkeni YOK,
+    # ama 'thetao' TÜM derinliklerde var (3D). Derin seviyedeki thetao =
+    # gerçek dip/derin su sıcaklığı. Her su sütununda EN DERİN geçerli
+    # thetao değerini alıyoruz → Marmara'nın alt (Akdeniz kökenli) tabakası.
+    dst = None
     for _dsid in DS_TEM_MRM_ADAYLAR:
         try:
             _try = copernicusmarine.open_dataset(
-                dataset_id=_dsid, variables=["bottomT"],
-                start_datetime=today, end_datetime=today, **BBOX_MRM)
-            if "bottomT" in _try.variables or "bottomT" in getattr(_try, "data_vars", {}):
-                dsb = _try; break
+                dataset_id=_dsid, variables=["thetao"],
+                start_datetime=today, end_datetime=today,
+                minimum_depth=10.0, maximum_depth=250.0, **BBOX_MRM)
+            if "thetao" in _try.variables or "thetao" in getattr(_try, "data_vars", {}):
+                dst = _try; break
             _try.close()
         except Exception as e:
-            errors.append(f"MRM bottomT dene {_dsid}: {e}"); dsb = None
-    if dsb is not None:
+            errors.append(f"MRM dip-thetao dene {_dsid}: {e}"); dst = None
+    if dst is not None:
         try:
-            da_b = dsb["bottomT"].isel(time=0)
-            if "depth" in da_b.dims: da_b = da_b.isel(depth=0)
-            blats = dsb["latitude"].values[::STRIDE_MRM]
-            blons = dsb["longitude"].values[::STRIDE_MRM]
-            bvals = da_b.values[::STRIDE_MRM, ::STRIDE_MRM]
-            for i in range(len(blats)):
-                for j in range(len(blons)):
-                    vv = bvals[i, j]
-                    if vv is None or not np.isfinite(float(vv)): continue
-                    vv = float(vv)
+            da_t = dst["thetao"].isel(time=0)   # boyutlar: depth, lat, lon
+            tlats = dst["latitude"].values[::STRIDE_MRM]
+            tlons = dst["longitude"].values[::STRIDE_MRM]
+            has_depth = "depth" in da_t.dims
+            arr = da_t.values  # (depth, lat, lon) veya (lat, lon)
+            for i in range(len(tlats)):
+                ii = i * STRIDE_MRM
+                for j in range(len(tlons)):
+                    jj = j * STRIDE_MRM
+                    vv = None
+                    if has_depth:
+                        # En derin geçerli (NaN olmayan) seviyeyi bul → dip
+                        col = arr[:, ii, jj]
+                        for d in range(len(col) - 1, -1, -1):
+                            cv = col[d]
+                            if cv is not None and np.isfinite(float(cv)):
+                                vv = float(cv); break
+                    else:
+                        cv = arr[ii, jj]
+                        if cv is not None and np.isfinite(float(cv)):
+                            vv = float(cv)
+                    if vv is None: continue
                     if vv > 250: vv -= 273.15
                     if vv < -3 or vv > 35: continue
-                    k = _blk_key(blats[i], blons[j])
+                    k = _blk_key(tlats[i], tlons[j])
                     if k in mrm_rows: mrm_rows[k]['bt'] = round(vv, 1)
-            dsb.close()
+            dst.close()
         except Exception as e:
-            errors.append(f"MRM bottomT oku: {e}")
+            errors.append(f"MRM dip-thetao oku: {e}")
 
     # Marmara tuzluluk (so)
     try:
