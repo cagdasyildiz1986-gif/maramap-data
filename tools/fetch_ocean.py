@@ -36,7 +36,18 @@ BBOX = dict(
 
 # Dataset ID'leri — gerekirse Copernicus kataloğundan doğrulayın
 DS_SST  = "cmems_mod_med_phy-tem_anfc_4.2km_P1D-m"   # deniz sıcaklığı (thetao)
-DS_CHL  = "cmems_mod_med_bgc-pft_anfc_4.2km_P1D-m"   # klorofil (chl)
+DS_CHL  = "cmems_mod_med_bgc-pft_anfc_4.2km_P1D-m"   # klorofil (chl) — model
+
+# Marmara'yı model BGC kapsamıyor. UYDU ocean-color (deniz rengi) tüm
+# denizleri kapsar (uzaydan yüzey ölçümü, model sınırı yok). Marmara
+# klorofili için bu kullanılır. Aday ID'ler sırayla denenir.
+DS_CHL_SAT_ADAYLAR = [
+    "cmems_obs-oc_med_bgc-plankton_my_l4-gapfree-multi-1km_P1D",
+    "cmems_obs-oc_med_bgc-plankton_my_l3-multi-1km_P1D",
+    "cmems_obs-oc_glo_bgc-plankton_my_l4-gapfree-multi-4km_P1D",
+    "cmems_obs-oc_glo_bgc-plankton_my_l4-multi-4km_P1M",
+]
+DS_CHL_SAT_VARS = ["CHL", "chl"]
 DS_WAVE = "cmems_mod_med_wav_anfc_4.2km_PT1H-i"      # dalga (VHM0 = anlamlı dalga yük.)
 # Rüzgar: global L4 blended (Akdeniz dahil her yeri kapsar, 0.125°)
 DS_WIND = "cmems_obs-wind_glo_phy_nrt_l4_0.125deg_PT1H"
@@ -92,7 +103,11 @@ errors = []
 
 def grid_rows(ds, var, value_key, stride=STRIDE, surface=True, transform=None):
     """Bir değişkeni vectorized okuyup [{lat,lng,<value_key>}] satırları üretir."""
-    da = ds[var].isel(time=0)
+    da = ds[var]
+    # Zaman boyutu varsa EN YENİ dilimi al (uydu ürünlerinde son gün boş olabilir,
+    # -1 en güncel geçerli veriyi verir). Yoksa olduğu gibi kullan.
+    if "time" in da.dims:
+        da = da.isel(time=-1)
     if surface and "depth" in da.dims:
         da = da.isel(depth=0)
     lats = ds["latitude"].values[::stride]
@@ -286,17 +301,23 @@ except Exception as e:
 # Her biri bağımsız + graceful. Veriyi mevcut dizilere EKLER (append);
 # frontend en-yakın-komşu kullandığı için ek noktalar sorunsuz çalışır.
 def _blk_add(dataset, var, value_key, target, surface=True, transform=None,
-             depthrange=None, bbox=None, stride=None):
+             depthrange=None, bbox=None, stride=None, daysback=0):
     # dataset bir liste ise sırayla dene; var birden çok aday ise (liste) onu da dene
     ds_list = dataset if isinstance(dataset, (list, tuple)) else [dataset]
     var_list = var if isinstance(var, (list, tuple)) else [var]
     _bbox = bbox if bbox is not None else BBOX_BLK
     _stride = stride if stride is not None else STRIDE_BLK
+    # Uydu ürünlerinde son gün boş olabilir → başlangıcı geriye çek, grid_rows
+    # time=-1 ile en yeni geçerli dilimi alır.
+    _start = today
+    if daysback > 0:
+        from datetime import timedelta as _td
+        _start = (datetime.now(timezone.utc) - _td(days=daysback)).strftime('%Y-%m-%d')
     for dsid in ds_list:
         for vname in var_list:
             try:
                 kw = dict(dataset_id=dsid, variables=[vname],
-                          start_datetime=today, end_datetime=today, **_bbox)
+                          start_datetime=_start, end_datetime=today, **_bbox)
                 if depthrange:
                     kw['minimum_depth'], kw['maximum_depth'] = depthrange
                 ds = copernicusmarine.open_dataset(**kw)
@@ -371,6 +392,15 @@ except Exception as e:
 # ── 7. MARMARA DENİZİ (500m) SST — iç Marmara yüzey sıcaklığı ──
 _blk_add(DS_SST_MRM_ADAYLAR, "thetao", "sst", result['sst'],
          transform=_sst, depthrange=(1.0, 2.0), bbox=BBOX_MRM, stride=STRIDE_MRM)
+
+# ── 8. MARMARA KLOROFİL — uydu ocean-color (model BGC Marmara'yı kapsamaz)
+# Uydu deniz-rengi tüm denizleri kapsar. Marmara bbox'uyla çekip ekliyoruz.
+# Yüzey ölçümü olduğu için derinlik parametresi YOK.
+def _chl_sat(v):
+    return v if (v is not None and 0 < v <= 50) else None
+_blk_add(DS_CHL_SAT_ADAYLAR, DS_CHL_SAT_VARS, "chl", result['chl'],
+         transform=_chl_sat, surface=False, bbox=BBOX_MRM, stride=STRIDE_MRM,
+         daysback=7)
 
 # ── Kaydet ───────────────────────────────────────────────────
 if errors:
